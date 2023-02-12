@@ -1,11 +1,16 @@
 package com.monitior.interfaces;
 
-public interface Job {
-    void setJobID();
+import scala.Serializable;
+import scala.collection.immutable.Seq;
+
+public interface Job extends Serializable {
+    void setEventame(String name);
+    String getEventName();
+    void setJobID(int jobID);
     int getJobID();
-    void setProductArity();
+    void setProductArity(int productArity);
     int getProductArity();
-    void setStageInfo();
-    String getStageInfo();
+    void setStageID(Seq<Object> stageId );
+    Seq<Object> getStageID();
 
 }
