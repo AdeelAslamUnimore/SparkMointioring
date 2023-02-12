@@ -51,10 +51,10 @@ public class Main {
         SparkSession spark = SparkSession
                 .builder()
                 .config("spark.master", "local")
-                .config("spark.extraListeners","org.example.Model")
+                .config("spark.extraListeners","org.example.SparkListener")
                 .appName("JavaTC")
                 .getOrCreate();
-        spark.sparkContext().addSparkListener(new Model());
+        spark.sparkContext().addSparkListener(new SparkListener());
         JavaSparkContext jsc = new JavaSparkContext(spark.sparkContext());
 
         int slices = (args.length > 0) ? Integer.parseInt(args[0]): 2;

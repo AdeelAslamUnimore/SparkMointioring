@@ -1,48 +1,87 @@
 package org.example;
 
+import com.monitior.interfaces.*;
+import com.monitior.interfaces.Stage;
+import com.monitior.interfaces.Task;
+import com.monitior.spark.*;
+import com.monitior.spark.ExecutorAdded;
+import com.monitior.spark.TaskMetric;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.spark.executor.ExecutorMetrics;
 import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.resource.ExecutorResourceRequest;
 import org.apache.spark.scheduler.*;
 import org.apache.spark.scheduler.cluster.ExecutorInfo;
 import org.apache.spark.storage.RDDBlockId;
 import scala.Option;
+import scala.Tuple2;
+import scala.collection.JavaConversions;
 import scala.collection.JavaConverters;
+import scala.collection.immutable.Seq;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectOutputStream;
+import java.util.*;
 
 public class SparkListener extends org.apache.spark.scheduler.SparkListener {
-    long executorCPUTime=0L;
-    long resultSize=0L;
-    long serlizationTime=0L;
-    long totalRecordRead=0L;
-    long totalRecordWritter=0L;
-    Map<Integer,Integer> stageMap= new HashMap<>();
-
-    public long getSerlizationTime() {
-        return serlizationTime;
+    private Application applicationStart;
+    private Application applicationEnd;
+    private Job jobStart;
+    private Job jobEnd;
+    private Stage stageSubmitted;
+    private Stage stageCompleted;
+    private Stage stageExecutorMetrics;
+    private Task taskStart;
+    private Task taskGettingResult;
+    private Task taskEnd;
+    private Executor executorAdded;
+    private Executor executorRemoved;
+    private Executor executorUpdated;
+    private List<SerializableObject> objects;
+   private  KafkaProducer<String,  byte[]> producer;
+   private String kafkaTopic;
+    public SparkListener(){
+        Properties props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("acks", "all");
+        props.put("retries", 0);
+        props.put("batch.size", 16384);
+        props.put("linger.ms", 1);
+        props.put("buffer.memory", 33554432);
+        props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        producer = new KafkaProducer<>(props);
+       objects= new ArrayList<>();
+       this.kafkaTopic="Topic";
     }
+
 
     @Override
     public void onExecutorAdded(SparkListenerExecutorAdded executorAdded) {
         super.onExecutorAdded(executorAdded);
-        System.out.println("Executor..."+executorAdded.executorId());
+        this.executorAdded.setEventame("ExecutorAdded");
+        this.executorAdded= new ExecutorAdded();
+        this.executorAdded.setExecutorID(executorAdded.executorId());
         ExecutorInfo executorInfo=executorAdded.executorInfo();
+        this.executorAdded.setExecutorHost(executorInfo.executorHost());
+        this.executorAdded.setTotalCores(executorInfo.totalCores());
+        this.executorAdded.setResourceInfo(executorInfo.resourceProfileId());
+        this.executorAdded.setExecutorHost(executorInfo.executorHost());
+        this.executorAdded.executorTime(executorAdded.time());
+        this.objects.add((SerializableObject) this.executorAdded);
 
-        System.out.println("ExecHost...."+executorInfo.executorHost());
-        scala.collection.immutable.Map<String, String> map=executorInfo.attributes();
-      // Map<String,String> map1= JavaConverters.mapAsJavaMap(map.ma);
-        System.out.println(""+executorInfo.resourceProfileId());
-        //executorInfo.resourcesInfo()
-        System.out.println("totalCore"+executorInfo.totalCores());
+        //On Executor is added to
+        //executorInfo.resourcesInfo();
+
       //  System.exit(-1);
     }
 
     @Override
     public void onExecutorBlacklisted(SparkListenerExecutorBlacklisted executorBlacklisted) {
         super.onExecutorBlacklisted(executorBlacklisted);
+
         executorBlacklisted.executorId();
         executorBlacklisted.time();
       //  executorBlacklisted.
@@ -51,68 +90,77 @@ public class SparkListener extends org.apache.spark.scheduler.SparkListener {
     @Override
     public void onExecutorRemoved(SparkListenerExecutorRemoved executorRemoved) {
         super.onExecutorRemoved(executorRemoved);
-        executorRemoved.executorId();
+        this.executorRemoved.setEventame("ExecutorRemoved");
+        this.executorRemoved= new ExecutorRemoved();
+        this.executorRemoved.setExecutorHost(executorRemoved.executorId());
+        this.executorRemoved.setReasonOfRemoval(executorRemoved.reason());
+        this.executorRemoved.executorTime(executorRemoved.time());
+        this.objects.add((SerializableObject) this.executorRemoved);
+
         //executorRemove
     }
 
     @Override
     public void onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate executorMetricsUpdate) {
         super.onExecutorMetricsUpdate(executorMetricsUpdate);
-        System.out.println(".."+executorMetricsUpdate.execId());
-   //  System.exit(-1);
-        Set keys = (Set) executorMetricsUpdate.executorUpdates().keySet();
-        System.out.println(keys.size());
-       // System.exit(-1);
-        Iterator i = keys.iterator();
-        //while (i.hasNext()) {
-          //  System.out.println(i.next());
-       // }
-       // System.out.println("..");
-       // executorMetricsUpdate
-          //  System.exit(-1);
-    }
+        this.executorUpdated= new ExecutorUpdated();
+        this.executorUpdated.setExecutorID(executorMetricsUpdate.execId());
+        this.executorUpdated.setEventame("ExecutorUpdated");
+       this.objects.add((SerializableObject) this.executorUpdated);
+
+        }
+
+
+
     @Override
     public void onTaskStart(SparkListenerTaskStart taskStart) {
         super.onTaskStart(taskStart);
+        this.taskStart=new TaskStart();
+        TaskInfo taskInfo= taskStart.taskInfo();
+        this.taskStart.setID(taskInfo.id());
+        this.taskStart.setEventame("OnTaskStart");
+        this.taskStart.setHostIP(taskInfo.host());
+        this.taskStart.setStringExecutorID(taskInfo.executorId());
+        this.taskStart.setTaskStatus(taskInfo.status());
+        this.taskStart.setTaskID(taskInfo.taskId());
 
-        //System.out.printf("ID____"+taskStart.taskInfo().id());
-       // System.out.println("Host------"+taskStart.taskInfo().host());
-        //System.out.println("TaskID------"+taskStart.taskInfo().taskId());
-       // System.out.println("The------"+taskStart.taskInfo().id());
-        //System.out.println("ExecutorID------"+taskStart.taskInfo().executorId());
-        //System.out.println("TaskLocality------"+taskStart.taskInfo().taskLocality().toString());
-        //System.out.println("status------"+taskStart.taskInfo().status());
-        //System.out.println("The------"+taskStart.taskInfo().duration());
-        //System.out.println("AttampNo------"+taskStart.taskInfo().attemptNumber());
-       // System.out.println("Finish------"+taskStart.taskInfo().finished());
-        //System.out.println("FinishTime------"+taskStart.taskInfo().finishTime());
-       // System.out.println("PartitionID------"+taskStart.taskInfo().partitionId());
-        //System.out.println("GettingResult------"+taskStart.taskInfo().gettingResult());
-       // System.out.println("GettingResultTime------"+taskStart.taskInfo().gettingResultTime());
-       // System.out.println("TaskInfoIndex------"+taskStart.taskInfo().index());
-       // System.out.println("LaunchTime------"+taskStart.taskInfo().launchTime());
-       // System.out.println("ExecutorID------"+taskStart.taskInfo().executorId());
-       // System.out.println("RunningTimeTillNow------"+taskStart.taskInfo().timeRunning(System.currentTimeMillis()));
-       // System.out.println("Failed------"+taskStart.taskInfo().failed());
-       // System.out.println("Killed------"+taskStart.taskInfo().killed());
-       // System.out.println("TheSuccessfull------"+taskStart.taskInfo().successful());
-        //System.out.println("Running------"+taskStart.taskInfo().running());
-        //System.out.println("TheStageID------"+taskStart.stageId());
+        this.taskStart.setIndex(taskInfo.index());
+        this.taskStart.setLaunchTime(taskInfo.launchTime());
 
-        // System.exit(-1);
+        this.taskStart.setFinishTime(taskInfo.finishTime());
+        this.taskStart.setDurationTime(taskInfo.duration());
+        this.taskStart.setGettingTime(taskInfo.gettingResultTime());
+       this. taskStart.setStageID(taskStart.stageId());
+       this.taskStart.setPartition(taskInfo.partitionId());
+       if(taskInfo.failed()){
+        this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.FAILED);
+       }
+       else if(taskInfo.finished()){
+           this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.FINISHED);
+        }
+       else if(taskInfo.killed()){
+           this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.KILLED);
+       }
+       else  if(taskInfo.running()){
+           this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.RUNNING);
+       }
+       else if(taskInfo.successful()){
+           this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.SUCCESSFUL);
+       }
+       else if(taskInfo.speculative()){
+           this.taskStart.setTaskStatusForRunning(Task.TaskStatusForRunning.SPECULATIVE);
+       }
+       else {
+           this.taskStart.setTaskStatusForRunning(null);
+       }
+        this.objects.add((SerializableObject) this.taskStart);
+
+
+
     }
     @Override
     public void onBlockUpdated(SparkListenerBlockUpdated blockUpdated) {
         super.onBlockUpdated(blockUpdated);
-        //System.out.println("BLOCK ID"+blockUpdated.blockUpdatedInfo().blockId());
-       // System.out.println(blockUpdated.blockUpdatedInfo().blockManagerId().host());
-       // System.out.println(blockUpdated.blockUpdatedInfo().blockManagerId().topologyInfo().toString());
-       // System.out.println(blockUpdated.blockUpdatedInfo().blockId().name());
-       // System.out.println(blockUpdated.blockUpdatedInfo().blockId().isRDD());
-       // System.out.println(blockUpdated.blockUpdatedInfo().blockId().asRDDId());
-        //Option<RDDBlockId> optionRDDBlockId=blockUpdated.blockUpdatedInfo().blockId().asRDDId();
-        //optionRDDBlockId.get().name();
-        //System.exit(-1);
 
     }
 
@@ -127,177 +175,192 @@ public class SparkListener extends org.apache.spark.scheduler.SparkListener {
     @Override
     public void onApplicationStart(SparkListenerApplicationStart applicationStart) {
         super.onApplicationStart(applicationStart);
-        //System.out.println("........."+getSerlizationTime());
-       // System.exit(-1);
-       // System.out.println(applicationStart.appName());
-        //System.out.println("ApplicationName-------------------"+applicationStart.appName());
+        this.applicationStart= new ApplicationStart();
+        this.applicationStart.setAppID(applicationStart.appId().get());
+        this.applicationStart.setEventame("ApplicationStart");
+        this.applicationStart.setName(applicationStart.appName());
+        this.applicationStart.setSparkUser(applicationStart.sparkUser());
+        this.applicationStart.setStartTime(applicationStart.time());
+        this.objects.add((SerializableObject) this.applicationStart);
 
-        //System.out.println("AttemptID......................."+applicationStart.appAttemptId());
-       // System.out.println("ApplicationStartTime......................"+applicationStart.time());
-       // System.out.println("Application ID.........."+applicationStart.appId());
-       // System.out.println("ProductPredix............"+applicationStart.productPrefix());
-       // System.out.println("SparkUser......"+applicationStart.sparkUser());
-        //System.out.println("Driver Attribute----"+applicationStart.driverAttributes().iterator());
-
-       // System.out.println(applicationStart.appAttemptId().toString());
-        //System.out.println(applicationStart.appId().toString());
-        //System.exit(-1);
     }
-
-
-
-
     @Override
     public void onJobStart(SparkListenerJobStart jobStart) {
         super.onJobStart(jobStart);
-        //System.out.println("JobID---"+jobStart.jobId()+"................JobTime.."+jobStart.time());
-       // System.out.println("Product Arity-------"+jobStart.productArity());
-        //System.out.println("StageId-------"+jobStart.stageIds().distinct()+"---"+"Stage Info..."+jobStart.stageInfos().distinct().toString());
-       // System.out.println(".."+jobStart.);
+        this.jobStart= new JobStart();
+        this.jobStart.setEventame("JobStart");
+        this.jobStart.setJobID(jobStart.jobId());
+        this.jobStart.setProductArity(jobStart.productArity());
+        this.jobStart.setStageID((Seq<Object>) jobStart.stageIds());
+        this.objects.add((SerializableObject) this.jobStart);
 
-       // if(jobStart.jobId()==1)
-     //
     }
 
     @Override
     public void onJobEnd(SparkListenerJobEnd jobEnd) {
-
-
-       // System.out.println("Job--");
-        //Iterator iterator= (Iterator) jobEnd.productIterator();
-        //while(iterator.hasNext()){
-
-        //}
         super.onJobEnd(jobEnd);
+        this.jobEnd= new JobEnd();
+        this.jobEnd.setJobID(jobEnd.jobId());
+        this.jobEnd.setEventame("JobEnd");
+        this.jobEnd.setProductArity(jobEnd.productArity());
+        this.objects.add((SerializableObject) this.jobEnd);
 
-        //System.out.println("JobId----"+jobEnd.jobId()+"jobEnd..."+jobEnd.time()+"......JobResult.."+jobEnd.jobResult().toString());
-        //obEnd.copy(jobEnd.jobId(),jobEnd.time(),jobEnd.jobResult());
-       // System.exit(-1);
 
     }
 
     @Override
     public void onTaskEnd(SparkListenerTaskEnd taskEnd) {
         super.onTaskEnd(taskEnd);
+
+        this.taskEnd=new TaskStart();
+        TaskInfo taskInfo= taskEnd.taskInfo();
+        this.taskEnd.setID(taskInfo.id());
+        this.taskEnd.setEventame("OnTaskGettingResult");
+        this.taskEnd.setHostIP(taskInfo.host());
+        this.taskEnd.setStringExecutorID(taskInfo.executorId());
+        this.taskEnd.setTaskStatus(taskInfo.status());
+        this.taskEnd.setTaskID(taskInfo.taskId());
+
+        this.taskEnd.setIndex(taskInfo.index());
+        this.taskEnd.setLaunchTime(taskInfo.launchTime());
+
+        this.taskEnd.setFinishTime(taskInfo.finishTime());
+        this.taskEnd.setDurationTime(taskInfo.duration());
+        this.taskEnd.setGettingTime(taskInfo.gettingResultTime());
+        //  this. taskGettingResult.setStageID(taskGettingResult.stageId());
+        this.taskEnd.setPartition(taskInfo.partitionId());
+        if(taskInfo.failed()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.FAILED);
+        }
+        else if(taskInfo.finished()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.FINISHED);
+        }
+        else if(taskInfo.killed()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.KILLED);
+        }
+        else  if(taskInfo.running()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.RUNNING);
+        }
+        else if(taskInfo.successful()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.SUCCESSFUL);
+        }
+        else if(taskInfo.speculative()){
+            this.taskEnd.setTaskStatusForRunning(Task.TaskStatusForRunning.SPECULATIVE);
+        }
+        else {
+            this.taskEnd.setTaskStatusForRunning(null);
+        }
+
+
         TaskMetrics taskMetrics= taskEnd.taskMetrics();
-       // System.out.println("The------"+taskEnd.taskInfo().host());
-       // System.out.println("The------"+taskEnd.taskInfo().taskId());
-       // System.out.println("The------"+taskEnd.taskInfo().id());
-        //System.out.println("The------"+taskEnd.taskInfo().executorId());
-        //System.out.println("The------"+taskEnd.taskInfo().taskLocality().toString());
-       // System.out.println("The------"+taskEnd.taskInfo().status());
-       // System.out.println("The------"+taskEnd.taskInfo().duration());
-       // System.out.println("The------"+taskEnd.taskInfo().attemptNumber());
-       // System.out.println("The------"+taskEnd.taskInfo().finished());
-       // System.out.println("The------"+taskEnd.taskInfo().finishTime());
-       // System.out.println("The------"+taskEnd.taskInfo().partitionId());
-       // System.out.println("The------"+taskEnd.taskInfo().gettingResult());
-       // System.out.println("The------"+taskEnd.taskInfo().gettingResultTime());
-       // System.out.println("The------"+taskEnd.taskInfo().index());
-       // System.out.println("The------"+taskEnd.taskInfo().launchTime());
-       // System.out.println("The------"+taskEnd.taskInfo().executorId());
-        //System.out.println("The------"+taskEnd.taskInfo().timeRunning(System.currentTimeMillis()));
-       // System.out.println("The------"+taskEnd.taskInfo().failed());
-        //System.out.println("The------"+taskEnd.taskInfo().killed());
-       // System.out.println("The------"+taskEnd.taskInfo().successful());
-       // System.out.println("The------"+taskEnd.taskInfo().running());
-       // System.out.println("The------"+taskEnd.stageId());
+        TaskMetric taskMetric= new TaskMetric();
+        taskMetric.setExecutorCPUTime(taskMetrics.executorCpuTime());
+        taskMetric.setExecutorDeserializeCpuTime(taskMetrics.executorDeserializeCpuTime());
+        taskMetric.setExecutorDeserializeTime(taskMetrics.executorDeserializeTime());
+        taskMetric.setDiskBytesSpilled(taskMetrics.diskBytesSpilled());
+        taskMetric.setExecutorRunTime(taskMetrics.executorRunTime());
+        taskMetric.setjvmGCTime(taskMetrics.jvmGCTime());
+        taskMetric.setPeakExecutionMemory(taskMetrics.peakExecutionMemory());
+        taskMetric.setResultSize(taskMetrics.resultSize());
+        taskMetric.setResultSerializationTime(taskMetrics.resultSerializationTime());
+        this.taskEnd.setTaskMetric(taskMetric);
+        this.objects.add((SerializableObject) this.taskEnd);
 
-       executorCPUTime= taskMetrics.executorCpuTime();
-        resultSize=taskMetrics.resultSize();
-        serlizationTime=taskMetrics.resultSerializationTime();
-        totalRecordRead =taskMetrics.inputMetrics().recordsRead();
-        totalRecordWritter=taskMetrics.outputMetrics().recordsWritten();
-
-       // System.out.println("ExecutorCPUTime"+ taskMetrics.executorCpuTime());
-       // System.out.println("RecordsCPU"+taskMetrics.inputMetrics().recordsRead());
-        //System.out.println("DiskBytesSpilled"+taskMetrics.diskBytesSpilled());
-       // System.out.println("ExecutorDeSerlizationCPUTime"+taskMetrics.executorDeserializeCpuTime());
-       // System.out.println("ExecutorDeserlizeTime"+taskMetrics.executorDeserializeTime());
-       // System.out.println(".."+taskMetrics.diskBytesSpilled());
-       // System.out.println(".."+taskMetrics.diskBytesSpilled());
-       // System.out.println("ExecutorRunTime"+taskMetrics.executorRunTime());
-       // System.out.println("JVMGCTime"+taskMetrics.jvmGCTime());
-       // System.out.println(".."+taskMetrics.peakExecutionMemory());
-       // System.out.println(".."+taskMetrics.resultSize());
-       // System.out.println(".."+taskMetrics.resultSerializationTime());
-       // System.out.println(".."+taskMetrics.outputMetrics().recordsWritten());
-       // System.out.println(".."+taskMetrics.outputMetrics().bytesWritten());
-        //System.out.println("TaskType"+taskEnd.taskType());
-            System.out.println("--------------"+executorCPUTime);
-           System.out.println(",,,,,,,,,,,,,,,,,,,"+totalRecordWritter);
     }
 
     @Override
     public void onStageCompleted(SparkListenerStageCompleted stageCompleted) {
         super.onStageCompleted(stageCompleted);
-        int tasks= stageCompleted.stageInfo().numTasks();
-        stageCompleted.stageInfo().numTasks();
-        int stageId=stageCompleted.stageInfo().stageId();
-        System.out.println(stageCompleted.stageInfo().name());
-        System.out.println(stageCompleted.stageInfo().numTasks());
-        System.out.println(stageCompleted.stageInfo().completionTime());
-        System.out.println("StageExecutorCPU...."+stageCompleted.stageInfo().taskMetrics().executorCpuTime());
-        System.out.println("stageExecutorDeserlization.."+stageCompleted.stageInfo().taskMetrics().executorDeserializeTime());
-        System.out.println(stageCompleted.stageInfo().details());
-        System.out.println(stageCompleted.stageInfo().getStatusString());
-        System.out.println(stageCompleted.stageInfo().taskMetrics().executorRunTime());
-        stageMap.put(tasks,stageId);
 
-       System.out.println("----"+stageMap.size()+"---------------"+tasks+"----------------------"+stageId);
-       //System.exit(-1);
+        this.stageCompleted= new StageSubmitted();
+        StageInfo stageInfo=stageCompleted.stageInfo();
+        this.stageCompleted.setDetails(stageInfo.details());
+        this.stageCompleted.setEventame("OnStageSubmitted");
+        this.stageCompleted.setStageName(stageInfo.name());
+        this.stageCompleted.setStatus(stageInfo.getStatusString());
+        this.stageCompleted.setNumberOfTasks(stageInfo.numTasks());
+        this.stageCompleted.setID(stageInfo.stageId());
+        this.stageCompleted.setSubmissionTime((Long) stageInfo.submissionTime().get());
+        //this.stageSubmitted.setCompletionTime((Long) stageInfo.completionTime().get());
+        TaskMetrics taskMetrics= stageCompleted.stageInfo().taskMetrics();
+        TaskMetric taskMetric= new TaskMetric();
+        taskMetric.setExecutorCPUTime(taskMetrics.executorCpuTime());
+        taskMetric.setExecutorDeserializeCpuTime(taskMetrics.executorDeserializeCpuTime());
+        taskMetric.setExecutorDeserializeTime(taskMetrics.executorDeserializeTime());
+        taskMetric.setDiskBytesSpilled(taskMetrics.diskBytesSpilled());
+        taskMetric.setExecutorRunTime(taskMetrics.executorRunTime());
+        taskMetric.setjvmGCTime(taskMetrics.jvmGCTime());
+        taskMetric.setPeakExecutionMemory(taskMetrics.peakExecutionMemory());
+        taskMetric.setResultSize(taskMetrics.resultSize());
+        taskMetric.setResultSerializationTime(taskMetrics.resultSerializationTime());
+        this.stageCompleted.setTaskMetric(taskMetric);
+        this.objects.add((SerializableObject) this.stageCompleted);
+
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            oos.writeObject(objects);
+            producer.send(new ProducerRecord(kafkaTopic, "Objects", baos.toByteArray()));
+            objects= new ArrayList<>();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+
+
     }
 
     @Override
     public void onStageSubmitted(SparkListenerStageSubmitted stageSubmitted) {
         super.onStageSubmitted(stageSubmitted);
-        System.out.println("StageInformationDetails"+stageSubmitted.stageInfo().details());
-        System.out.println(".."+stageSubmitted.stageInfo().getStatusString());
-        System.out.println(".."+stageSubmitted.stageInfo().name());
-        System.out.println("StageNumberOfTasks...."+stageSubmitted.stageInfo().numTasks());
-        System.out.println("Stage ID"+stageSubmitted.stageInfo().stageId());
-        System.out.println("TaskMetricsExecutorCPU"+stageSubmitted.stageInfo().taskMetrics().executorCpuTime());
-        System.out.println("TaskMetricsRecordRead"+stageSubmitted.stageInfo().taskMetrics().inputMetrics().recordsRead());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().inputMetrics().bytesRead());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().executorDeserializeCpuTime());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().executorDeserializeTime());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().diskBytesSpilled());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().diskBytesSpilled());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().executorRunTime());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().jvmGCTime());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().peakExecutionMemory());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().resultSize());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().resultSerializationTime());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().outputMetrics().recordsWritten());
-        System.out.println(".."+stageSubmitted.stageInfo().taskMetrics().outputMetrics().bytesWritten());
+
+        this.stageSubmitted= new StageSubmitted();
+        StageInfo stageInfo=stageSubmitted.stageInfo();
+        this.stageSubmitted.setDetails(stageInfo.details());
+       this.stageSubmitted.setEventame("OnStageSubmitted");
+       this.stageSubmitted.setStageName(stageInfo.name());
+       this.stageSubmitted.setStatus(stageInfo.getStatusString());
+       this.stageSubmitted.setNumberOfTasks(stageInfo.numTasks());
+       this.stageSubmitted.setID(stageInfo.stageId());
+       this.stageSubmitted.setSubmissionTime((Long) stageInfo.submissionTime().get());
+       //this.stageSubmitted.setCompletionTime((Long) stageInfo.completionTime().get());
+        TaskMetrics taskMetrics= stageSubmitted.stageInfo().taskMetrics();
+        TaskMetric taskMetric= new TaskMetric();
+        taskMetric.setExecutorCPUTime(taskMetrics.executorCpuTime());
+        taskMetric.setExecutorDeserializeCpuTime(taskMetrics.executorDeserializeCpuTime());
+        taskMetric.setExecutorDeserializeTime(taskMetrics.executorDeserializeTime());
+        taskMetric.setDiskBytesSpilled(taskMetrics.diskBytesSpilled());
+        taskMetric.setExecutorRunTime(taskMetrics.executorRunTime());
+        taskMetric.setjvmGCTime(taskMetrics.jvmGCTime());
+        taskMetric.setPeakExecutionMemory(taskMetrics.peakExecutionMemory());
+        taskMetric.setResultSize(taskMetrics.resultSize());
+        taskMetric.setResultSerializationTime(taskMetrics.resultSerializationTime());
+        this.stageSubmitted.setTaskMetric(taskMetric);
+        this.objects.add((SerializableObject) this.stageSubmitted);
+
+
      //   System.exit(-1);
     }
 
     @Override
     public void onStageExecutorMetrics(SparkListenerStageExecutorMetrics executorMetrics) {
         super.onStageExecutorMetrics(executorMetrics);
-        System.out.println(executorMetrics.stageId());
-        System.out.println(executorMetrics.execId());
-        System.out.println(executorMetrics.stageAttemptId());
-        System.out.println(executorMetrics.toString());
+
+        this.stageExecutorMetrics= new StageExecutorMetrics();
+        this.stageExecutorMetrics.setID(executorMetrics.stageId());
+        this.stageExecutorMetrics.setEventame("StageExecutorMetric");
+        this.stageExecutorMetrics.setExecutorID(executorMetrics.execId());
+        this.stageExecutorMetrics.setStageAttemptId(executorMetrics.stageAttemptId());
+        this.objects.add((SerializableObject) this.stageSubmitted);
     }
 
     @Override
     public void onApplicationEnd(SparkListenerApplicationEnd applicationEnd) {
         super.onApplicationEnd(applicationEnd);
-        Long time= applicationEnd.time();
-        System.out.println(applicationEnd.logEvent());
-        System.out.println(applicationEnd.productPrefix());
+        this.applicationEnd=new ApplicationEnd();
+        this.applicationEnd.setStartTime(applicationEnd.time());
+        this.objects.add((SerializableObject) this.applicationEnd);
 
-        System.out.printf("ApplicationExecutorTime : %d",executorCPUTime);
-        System.out.printf("TotalResultSize : %d",resultSize);
-        System.out.printf("TotalSerlizationTime : %d",serlizationTime);
-        System.out.printf("TotalRecordRead : %d",totalRecordRead);
-        System.out.printf("TotalRecordWrite : %d",totalRecordWritter);
-
-        for (int id:stageMap.keySet()){
-          //  System.out.printf("stageid : %d -tasks : %d ",id,stageMap.get(id));
-       }
     }
 
     @Override
@@ -322,28 +385,48 @@ public class SparkListener extends org.apache.spark.scheduler.SparkListener {
     @Override
     public void onTaskGettingResult(SparkListenerTaskGettingResult taskGettingResult) {
         super.onTaskGettingResult(taskGettingResult);
-        System.out.println("The------"+taskGettingResult.taskInfo().host());
-        System.out.println("The------"+taskGettingResult.taskInfo().taskId());
-        System.out.println("The------"+taskGettingResult.taskInfo().id());
-        System.out.println("The------"+taskGettingResult.taskInfo().executorId());
-        System.out.println("The------"+taskGettingResult.taskInfo().taskLocality().toString());
-        System.out.println("The------"+taskGettingResult.taskInfo().status());
-        System.out.println("The------"+taskGettingResult.taskInfo().duration());
-        System.out.println("The------"+taskGettingResult.taskInfo().attemptNumber());
-        System.out.println("The------"+taskGettingResult.taskInfo().finished());
-        System.out.println("The------"+taskGettingResult.taskInfo().finishTime());
-        System.out.println("The------"+taskGettingResult.taskInfo().partitionId());
-        System.out.println("The------"+taskGettingResult.taskInfo().gettingResult());
-        System.out.println("The------"+taskGettingResult.taskInfo().gettingResultTime());
-        System.out.println("The------"+taskGettingResult.taskInfo().index());
-        System.out.println("The------"+taskGettingResult.taskInfo().launchTime());
-        System.out.println("The------"+taskGettingResult.taskInfo().executorId());
-        System.out.println("The------"+taskGettingResult.taskInfo().timeRunning(System.currentTimeMillis()));
-        System.out.println("The------"+taskGettingResult.taskInfo().failed());
-        System.out.println("The------"+taskGettingResult.taskInfo().killed());
-        System.out.println("The------"+taskGettingResult.taskInfo().successful());
-        System.out.println("The------"+taskGettingResult.taskInfo().running());
-        System.out.println("The------"+taskGettingResult.toString());
+
+
+
+        this.taskGettingResult=new TaskStart();
+        TaskInfo taskInfo= taskGettingResult.taskInfo();
+        this.taskGettingResult.setID(taskInfo.id());
+        this.taskGettingResult.setEventame("OnTaskGettingResult");
+        this.taskGettingResult.setHostIP(taskInfo.host());
+        this.taskGettingResult.setStringExecutorID(taskInfo.executorId());
+        this.taskGettingResult.setTaskStatus(taskInfo.status());
+        this.taskGettingResult.setTaskID(taskInfo.taskId());
+
+        this.taskGettingResult.setIndex(taskInfo.index());
+        this.taskGettingResult.setLaunchTime(taskInfo.launchTime());
+
+        this.taskGettingResult.setFinishTime(taskInfo.finishTime());
+        this.taskGettingResult.setDurationTime(taskInfo.duration());
+        this.taskGettingResult.setGettingTime(taskInfo.gettingResultTime());
+      //  this. taskGettingResult.setStageID(taskGettingResult.stageId());
+        this.taskGettingResult.setPartition(taskInfo.partitionId());
+        if(taskInfo.failed()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.FAILED);
+        }
+        else if(taskInfo.finished()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.FINISHED);
+        }
+        else if(taskInfo.killed()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.KILLED);
+        }
+        else  if(taskInfo.running()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.RUNNING);
+        }
+        else if(taskInfo.successful()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.SUCCESSFUL);
+        }
+        else if(taskInfo.speculative()){
+            this.taskGettingResult.setTaskStatusForRunning(Task.TaskStatusForRunning.SPECULATIVE);
+        }
+        else {
+            this.taskGettingResult.setTaskStatusForRunning(null);
+        }
+        this.objects.add((SerializableObject) this.taskGettingResult);
        // taskGettingResult.
 
     }
